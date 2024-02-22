@@ -25,7 +25,9 @@ torch.save(model.state_dict(), os.path.join(args.res_path, 'model.pt'))
 config = utils.ModelConfig(os.path.join(args.res_path, 'model.pt'), args.res_path, split_num=args.num_expert)
 
 templates = args.templates.split(',')
-for template in templates:
+for template_idx, template in enumerate(templates):
+    print(f'Processing template {template_idx + 1} of {len(templates)}')
     for i in range(args.num_layer):
+        print(f'  Processing template {i + 1} of {args.num_layer}')
         center = utils.MLPCenter(config, template, '{}/param_split/{}'.format(args.res_path, template.format(i)), i)
         center.cal_center()

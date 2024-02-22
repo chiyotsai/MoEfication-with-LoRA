@@ -204,7 +204,7 @@ class MLPCenter(BlockCenter):
         num_blocks = max(self.labels) + 1
         for i in range(num_blocks):
             patterns.append(np.array(self.labels) == i)
-        patterns = torch.Tensor(patterns).cuda().float().transpose(0, 1)
+        patterns = torch.Tensor(np.array(patterns)).cuda().float().transpose(0, 1)
 
         hiddens = load_hidden_states(self.config.folder, self.template.format(self.layer))
 
@@ -241,10 +241,11 @@ class MLPCenter(BlockCenter):
 
         last_epoch = -1
 
-        for epoch in range(30):
+        epoch_bar = tqdm.tqdm(range(15))
+        for epoch in epoch_bar:
             train_hiddens=train_hiddens[torch.randperm(train_hiddens.size()[0])]
 
-            pbar = tqdm.tqdm(range(0, train_hiddens.shape[0], 512))
+            pbar = range(0, train_hiddens.shape[0], 512)
             for i in pbar:
                 model.zero_grad()
 
@@ -258,8 +259,6 @@ class MLPCenter(BlockCenter):
               
                 loss.backward()
                 optim.step()
-
-                pbar.set_description("loss: {:.4f}".format(loss.item()))
 
             acc = []
             
@@ -275,30 +274,28 @@ class MLPCenter(BlockCenter):
                     pred = model(input)
                     pred = torch.topk(pred, k=int(num_blocks*0.2), dim=-1)[1]
 
-                    for x, m, s in zip(pred, mask, scores):
-                        if m.sum().item() == 0:
-                            continue
-                        x = sum([s[xx] for xx in x.cpu()]).item()
-                        y = s.sum().item()
-                        acc.append( x / y)
+                    total_mask = mask.sum(axis=1)
+                    total_scores = scores.sum(axis=1)
+                    pred_scores = torch.gather(scores, dim=1, index=pred).sum(axis=1)
+                    total_scores = torch.masked_select(total_scores, mask=(total_mask!=0))
+                    pred_scores = torch.masked_select(pred_scores, mask=(total_mask!=0))
+                    acc_vec = pred_scores/total_scores
+                    acc.extend(acc_vec.tolist())
             
             cur_acc = np.mean(acc)
             if cur_acc > save_acc[0]:
                 self.del_ckpt(save_epoch[1])
                 save_acc = [cur_acc, save_acc[0]]
                 save_epoch = [epoch, save_epoch[0]]
-                print("input compl center acc", np.mean(acc))
                 self.acc = save_acc[1]
-                sys.stdout.flush()
                 self.save(epoch)
             elif cur_acc > save_acc[1]:
                 self.del_ckpt(save_epoch[1])
                 save_acc = [save_acc[0], cur_acc]
                 save_epoch = [save_epoch[0], epoch]
-                print("input compl center acc", np.mean(acc))
                 self.acc = save_acc[1]
-                sys.stdout.flush()
                 self.save(epoch)
+            epoch_bar.set_description(f"Current acc {cur_acc:.4}, best_acc: {save_acc[0]:.4}")
         os.system("rm -rf {}_{}_{}".format(self.filename, self.type, save_epoch[0]))
         os.system("cp {0}_{1}_{2} {0}_{1}".format(self.filename, self.type, save_epoch[1]))
         os.system("rm {0}_{1}_{2}".format(self.filename, self.type, save_epoch[1]))
@@ -307,6 +304,5 @@ class MLPCenter(BlockCenter):
         os.system("rm -rf {}_{}_{}".format(self.filename, self.type, epoch))
 
     def save(self, epoch):
-        print("input compl center save")
         torch.save(self.centers, "{}_{}_{}".format(self.filename, self.type, epoch))
         self.save_acc()
