@@ -8,8 +8,8 @@ import argparse
 import tqdm
 from transformers import T5ForConditionalGeneration
 
-sys.path.append('moefication')
-import utils
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from moefication import utils
 
 parser = argparse.ArgumentParser()
 
