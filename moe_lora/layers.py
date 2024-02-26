@@ -6,15 +6,14 @@ class LoRALinearLayer(nn.Module):
     def __init__(self, original_weight, rank, useBias=True, dropout=0.1, alpha=1.0, merge=False):
         super(LoRALinearLayer, self).__init__()
 
-        # Get the original weight and set it as a non-trainable parameter
-        self.original_weight = original_weight.detach()
-        self.original_weight.requires_grad = False
+        self.original_weight = nn.Parameter(original_weight)
 
         # Low-rank matrices A and B
         self.in_features, self.out_features = original_weight.shape
         self.rank = rank
-        self.A = nn.Parameter(torch.zeros(self.in_features, self.rank))
+        self.A = nn.Parameter(torch.empty(self.in_features, self.rank))
         self.B = nn.Parameter(torch.zeros(self.rank, self.out_features))
+        nn.init.normal_(self.A)
 
         # Scaling factor
         self.scaling = alpha / self.rank
@@ -47,9 +46,9 @@ class LoRALinearLayer(nn.Module):
             adapted_weight = self.original_weight + low_rank_update
 
         if self.useBias:
-            return F.linear(x, adapted_weight.t(), self.bias)
+            return F.linear(x, adapted_weight, self.bias)
         else:
-            return F.linear(x, adapted_weight.t())
+            return F.linear(x, adapted_weight)
 
     
     def train(self, mode: bool = True):
