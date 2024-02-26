@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class LoRALinearLayer(nn.Module):
-    def __init__(self, original_weight, rank, useBias=True, dropout=0.1, alpha=1.0, merge=False):
+    def __init__(self, original_weight, rank, useBias=True, alpha=1.0, merge=False):
         super(LoRALinearLayer, self).__init__()
 
         self.original_weight = nn.Parameter(original_weight)
@@ -25,19 +25,14 @@ class LoRALinearLayer(nn.Module):
         else:
             self.bias = None
 
-        # Dropout layer
-        self.dropout = nn.Dropout(p=dropout)
-
         # Weight merging flags
         self.merge_weights = merge 
         self.merged = False 
 
     def __repr__(self):
-        return f'{self.__class__.__name__}(in_features={self.in_features}, out_features={self.out_features}, lora_rank={self.rank}, bias={self.useBias}, dropout={self.dropout.p})'
+        return f'{self.__class__.__name__}(in_features={self.in_features}, out_features={self.out_features}, lora_rank={self.rank}, bias={self.useBias})'
 
     def forward(self, x):
-        x = self.dropout(x)
-        
         # Check if the weights are merged or not
         if self.merged:
             adapted_weight = self.original_weight
@@ -68,7 +63,3 @@ class LoRALinearLayer(nn.Module):
                 # Merge the weights
                 self.original_weight.data += ((self.A @ self.B) * self.scaling).data
                 self.merged = True
-
-
-
-
