@@ -1,9 +1,11 @@
 datasets
 k-means-constrained
+lightning
 numpy
 sentencepiece
 scikit-learn
 scipy
+tensorboard
 tqdm
 transformers==4.20.1
 
