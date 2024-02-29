@@ -53,11 +53,11 @@ class LitT5WithFFLoRA(L.LightningModule):
     self.save_hyperparameters()
 
   def forward(self, x):
-    sentences = [f"sst2 sentence: {x}"]
+    sentences = [f"sst2 sentence: {x['sentence']}"]
     input_ids = self.tokenizer(
-      text=sentences, return_tensors="pt", padding=True).input_ids
+      text=sentences, return_tensors="pt").input_ids.to(self.device)
     dec_input_ids = self.tokenizer(
-      text=["<extra_id_0>"], return_tensors="pt").input_ids[:, :1]
+      text=["<extra_id_0>"], return_tensors="pt").input_ids[:, :1].to(self.device)
     output = self.model(input_ids=input_ids, labels=dec_input_ids)
     return output
 
