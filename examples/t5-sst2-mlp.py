@@ -5,6 +5,7 @@ from datasets import load_dataset
 from transformers import T5Tokenizer, T5ForConditionalGeneration, T5Config
 import numpy as np
 from transformers.models.t5.modeling_t5 import T5DenseActDense
+from tqdm import tqdm
 
 k=20
 
@@ -67,7 +68,8 @@ def change_forward(model, k=20):
 change_forward(model, k)
 
 # sst2 evaluation
-for instance in sst2_dev:
+for instance in tqdm(sst2_dev):
+    print(instance)
     input_ids = tokenizer("sst2 sentence: "+instance['sentence'], return_tensors="pt").input_ids.cuda()
     dec_input_ids = tokenizer("<extra_id_0>", return_tensors="pt").input_ids.cuda()[:, :1]
 

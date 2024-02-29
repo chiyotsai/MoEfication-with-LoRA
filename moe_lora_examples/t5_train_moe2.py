@@ -264,11 +264,11 @@ def main():
     logging_interval='step', log_momentum=True
   )
 
-  # Train
-  trainer = L.Trainer(default_root_dir=EXP_NAME,
+  # Trainer
+"""   trainer = L.Trainer(default_root_dir=EXP_NAME,
                       max_epochs=NUM_TRAIN_EPOCHS, val_check_interval=VALIDATION_INTERVAL,
                       logger=loggers, callbacks=[checkpoint_callback, lr_monitor])
-  trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+  trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader) """
 
 if __name__ == "__main__":
   main()

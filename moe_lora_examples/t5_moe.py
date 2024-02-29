@@ -98,8 +98,8 @@ model = T5ForConditionalGeneration.from_pretrained('t5-base').cuda()
 sst2 = load_dataset('sst2')
 sst2_dev = sst2['validation']
 
-change_forward(model, k, rank=24)
-#print_modules(model)
+# change_forward(model, k, rank=24)
+print_modules(model)
 
 # sst2 evaluation
 pred = []
