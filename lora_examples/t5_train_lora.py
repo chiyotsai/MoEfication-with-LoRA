@@ -20,9 +20,9 @@ from moe_lora import LoRALinearLayer
 
 T5_VARIANT = 't5-base'
 EXP_NAME = "T5WithFFLoRA"
-BATCH_SIZE = 64
+BATCH_SIZE = 8
 
-NUM_TRAIN_EPOCHS = 2
+NUM_TRAIN_EPOCHS = 1
 VALIDATION_INTERVAL = 100
 
 LEARNING_RATE = 1e-5
@@ -34,16 +34,21 @@ LORA_WEIGHT_NAMES = ['A', 'B']
 
 
 class LitT5WithFFLoRA(L.LightningModule):
-  def __init__(self, t5_variant, learning_rate, weight_decay=0, lora_rank=16,
-               lr_scheduler='WarmupPoly', decay_steps=None):
+  def __init__(self, t5_variant, output_classes, learning_rate,
+               weight_decay=0, lora_rank=16, lr_scheduler='WarmupPoly',
+               decay_steps=None):
     super().__init__()
     model = T5ForConditionalGeneration.from_pretrained(t5_variant)
     replace_linear_with_lora_linear(model, rank=lora_rank, useBias=False)
     self.model = model
     self.tokenizer = T5Tokenizer.from_pretrained(t5_variant)
-    self.output_class_tokens = nn.Parameter(torch.tensor([NEGATIVE_TOKEN, POSITIVE_TOKEN]), requires_grad=False)
+    self.output_classes = output_classes
+    num_classes = len(self.output_classes)
+    self.output_class_tokens = self.tokenizer(output_classes, return_tensors='pt').input_ids
+    assert(self.output_class_tokens.shape == (num_classes, 2))
+    self.output_class_tokens = nn.Parameter(self.output_class_tokens[:, 0].squeeze(), requires_grad=False)
     self.loss_metric = torchmetrics.aggregation.MeanMetric()
-    self.accuracy_metric = torchmetrics.classification.Accuracy(task='binary')
+    self.accuracy_metric = torchmetrics.classification.Accuracy(task='multiclass', num_classes=num_classes)
 
     self.lr_scheduler = lr_scheduler
     self.decay_steps = decay_steps
@@ -53,9 +58,8 @@ class LitT5WithFFLoRA(L.LightningModule):
     self.save_hyperparameters()
 
   def forward(self, x):
-    sentences = [f"sst2 sentence: {x['sentence']}"]
     input_ids = self.tokenizer(
-      text=sentences, return_tensors="pt").input_ids.to(self.device)
+      text=[x['sentence']], return_tensors="pt").input_ids.to(self.device)
     dec_input_ids = self.tokenizer(
       text=["<extra_id_0>"], return_tensors="pt").input_ids[:, :1].to(self.device)
     output = self.model(input_ids=input_ids, labels=dec_input_ids)
@@ -94,19 +98,19 @@ class LitT5WithFFLoRA(L.LightningModule):
 
   def _load_one_batch(self, batch):
     labels = batch["label"].to(self.device)
-    sentences = [
-      f"sst2 sentence: {sentence}" for sentence in batch["sentence"]]
-    input_ids = self.tokenizer(
-      text=sentences, return_tensors="pt", padding=True).input_ids.to(self.device)
+    tokenized = self.tokenizer(
+      text=batch["sentence"], return_tensors="pt", padding=True)
+    input_ids = tokenized.input_ids.to(self.device)
+    attention_mask = tokenized.attention_mask.to(self.device)
     dec_input_ids = self.tokenizer(
       text=["<extra_id_0>"] * len(labels), return_tensors="pt").input_ids[:, :1].to(self.device)
-    return input_ids, dec_input_ids, labels
+    return input_ids, attention_mask, dec_input_ids, labels
     
-
   def training_step(self, batch, batch_idx):
-    input_ids, dec_input_ids, labels = self._load_one_batch(batch)
+    input_ids, attention_mask, dec_input_ids, labels = self._load_one_batch(batch)
 
-    output = self.model(input_ids=input_ids, labels=dec_input_ids)
+    output = self.model(input_ids=input_ids, attention_mask=attention_mask,
+                        labels=dec_input_ids)
     logits = output.logits.squeeze(dim=1).index_select(
       dim=1, index=self.output_class_tokens)
     loss = F.cross_entropy(logits, labels)
@@ -119,12 +123,13 @@ class LitT5WithFFLoRA(L.LightningModule):
     return loss
 
   def validation_step(self, batch, batch_idx):
-    input_ids, dec_input_ids, labels = self._load_one_batch(batch)
+    input_ids, attention_mask, dec_input_ids, labels = self._load_one_batch(batch)
 
-    output = self.model(input_ids=input_ids, labels=dec_input_ids)
+    output = self.model(input_ids=input_ids, attention_mask=attention_mask,
+                        labels=dec_input_ids)
     logits = output.logits.squeeze(dim=1).index_select(
       dim=1, index=self.output_class_tokens)
-    preds = logits[:, 1] >= logits[:, 0]
+    preds = torch.argmax(logits, 1)
 
     logits_loss = F.cross_entropy(logits, labels)
     accuracy = (preds == labels).float().mean()
@@ -132,7 +137,7 @@ class LitT5WithFFLoRA(L.LightningModule):
     # Setting logger to False 
     self.log('ckpt_metric', accuracy, batch_size=labels.size(0), logger=False)
 
-    self.accuracy_metric(preds=preds, target=labels)
+    self.accuracy_metric(preds=logits, target=labels)
     self.loss_metric.update(logits_loss)
 
     return logits_loss
@@ -172,28 +177,59 @@ def replace_linear_with_lora_linear(model, rank, useBias=False):
       replace_linear_with_lora_linear(module, rank, useBias=useBias)
 
 
+def _process_sst2_sentence(example):
+  example['sentence'] = f"sst2 sentence: {example['sentence']}"
+  return example
+
+def _process_race_sentence(example):
+  abcd_mapping = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+  prompt = f'''article: {example['article']}
+  question: {example['question']}
+  options: A: {example['options'][0]}, B: {example['options'][1]}, B: {example['options'][2]}, B: {example['options'][3]}'''
+  example['sentence'] = prompt
+  example['label'] = abcd_mapping[example['answer']]
+  return example
+
+
+def load_dataset(dataset_name):
+  if dataset_name == 'sst2':
+    dataset = datasets.load_dataset('sst2')
+    train, valid = dataset['train'], dataset['validation']
+
+    train = train.map(_process_sst2_sentence)
+    valid = valid.map(_process_sst2_sentence)
+    output_classes = ('negative', 'positive')
+  elif dataset_name == 'race':
+    dataset = datasets.load_dataset('race', 'all')
+    train, valid = dataset['train'], dataset['validation']
+
+    train = train.map(_process_race_sentence)
+    valid = valid.map(_process_race_sentence)
+    output_classes = ('A', 'B', 'C', 'D')
+
+  return train, valid, output_classes
+
+
 def main():
   # Dataset
-  sst2: datasets.Dataset = datasets.load_dataset('sst2')
-  sst2_train: datasets.Dataset = sst2['train']
-  sst2_valid: datasets.Dataset = sst2['validation']
+  train_set, valid_set, output_classes = load_dataset('race')
 
   num_data_workers = max(cpu_count()//2, 1)
   train_loader = torch.utils.data.DataLoader(
-    sst2_train, batch_size=BATCH_SIZE, shuffle=True,
+    train_set, batch_size=BATCH_SIZE, shuffle=True,
     num_workers=num_data_workers
   )
   valid_loader = torch.utils.data.DataLoader(
-    sst2_valid, batch_size=BATCH_SIZE, shuffle=False,
+    valid_set, batch_size=BATCH_SIZE, shuffle=False,
     num_workers=num_data_workers
   )
 
   # Model
-  model = LitT5WithFFLoRA(t5_variant=T5_VARIANT, learning_rate=LEARNING_RATE,
-                          decay_steps=len(sst2_train)*NUM_TRAIN_EPOCHS//BATCH_SIZE)
+  model = LitT5WithFFLoRA(t5_variant=T5_VARIANT, output_classes=output_classes,
+                          learning_rate=LEARNING_RATE,
+                          decay_steps=len(train_set)*NUM_TRAIN_EPOCHS//BATCH_SIZE)
 
-  #curr_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-  curr_time = 'debug'
+  curr_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
 
   # saves top-K checkpoints based on validation accuracy
   checkpoint_callback = L.pytorch.callbacks.ModelCheckpoint(
@@ -220,6 +256,10 @@ def main():
                       max_epochs=NUM_TRAIN_EPOCHS, val_check_interval=VALIDATION_INTERVAL,
                       logger=loggers, callbacks=[checkpoint_callback, lr_monitor])
   trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+
+  print('Running Final Accuracy Check')
+  model = LitT5WithFFLoRA.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+  model.eval()
 
 
 if __name__ == "__main__":
