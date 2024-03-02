@@ -262,7 +262,7 @@ def main():
   )
 
   # Train
-  trainer = L.Trainer(default_root_dir=EXP_NAME, num_sanity_val_steps=100,
+  trainer = L.Trainer(default_root_dir=EXP_NAME, num_sanity_val_steps=-1,
                       max_epochs=NUM_TRAIN_EPOCHS, val_check_interval=VALIDATION_INTERVAL,
                       logger=loggers, callbacks=[checkpoint_callback, lr_monitor])
   trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
