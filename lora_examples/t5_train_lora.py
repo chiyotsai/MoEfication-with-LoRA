@@ -20,15 +20,27 @@ from moe_lora import LoRALinearLayer
 
 T5_VARIANT = 't5-base'
 EXP_NAME = "T5WithFFLoRA"
-BATCH_SIZE = 8
+DATASET = 'race'
+if DATASET == 'sst2':
+  BATCH_SIZE = 64
 
-NUM_TRAIN_EPOCHS = 1
-VALIDATION_INTERVAL = 100
+  NUM_TRAIN_EPOCHS = 1
+  VALIDATION_INTERVAL = 200
 
-LEARNING_RATE = 1e-5
+  MAX_SOURCE_LENGTH = 512
 
-POSITIVE_TOKEN = 1465
-NEGATIVE_TOKEN = 2841
+  LEARNING_RATE = 1e-5
+elif DATASET == 'race':
+  BATCH_SIZE = 4
+
+  NUM_TRAIN_EPOCHS = 3
+  VALIDATION_INTERVAL = 3000
+
+  MAX_SOURCE_LENGTH = 1024
+
+  LEARNING_RATE = 1e-4
+else:
+  raise ValueError(f'Unexpected DATASET {DATASET}')
 
 LORA_WEIGHT_NAMES = ['A', 'B']
 
@@ -41,7 +53,7 @@ class LitT5WithFFLoRA(L.LightningModule):
     model = T5ForConditionalGeneration.from_pretrained(t5_variant)
     replace_linear_with_lora_linear(model, rank=lora_rank, useBias=False)
     self.model = model
-    self.tokenizer = T5Tokenizer.from_pretrained(t5_variant)
+    self.tokenizer = T5Tokenizer.from_pretrained(t5_variant, model_max_length=MAX_SOURCE_LENGTH)
     self.output_classes = output_classes
     num_classes = len(self.output_classes)
     self.output_class_tokens = self.tokenizer(output_classes, return_tensors='pt').input_ids
@@ -56,14 +68,6 @@ class LitT5WithFFLoRA(L.LightningModule):
     self.weight_decay = weight_decay
 
     self.save_hyperparameters()
-
-  def forward(self, x):
-    input_ids = self.tokenizer(
-      text=[x['sentence']], return_tensors="pt").input_ids.to(self.device)
-    dec_input_ids = self.tokenizer(
-      text=["<extra_id_0>"], return_tensors="pt").input_ids[:, :1].to(self.device)
-    output = self.model(input_ids=input_ids, labels=dec_input_ids)
-    return output
 
   def configure_optimizers(self):
     lora_weights = []
@@ -96,14 +100,20 @@ class LitT5WithFFLoRA(L.LightningModule):
       'lr_scheduler': lr_scheduler_config
     }
 
+  def forward(self, x):
+    input_ids = self.tokenizer(
+      text=[x['sentence']], return_tensors="pt").input_ids.to(self.device)
+    dec_input_ids = torch.tensor([self.tokenizer.pad_token_id]).to(self.device)
+    output = self.model(input_ids=input_ids, decoder_input_ids=dec_input_ids)
+    return output
+
   def _load_one_batch(self, batch):
     labels = batch["label"].to(self.device)
     tokenized = self.tokenizer(
       text=batch["sentence"], return_tensors="pt", padding=True)
     input_ids = tokenized.input_ids.to(self.device)
     attention_mask = tokenized.attention_mask.to(self.device)
-    dec_input_ids = self.tokenizer(
-      text=["<extra_id_0>"] * len(labels), return_tensors="pt").input_ids[:, :1].to(self.device)
+    dec_input_ids = torch.tensor(len(labels) * [[self.tokenizer.pad_token_id]]).to(self.device)
     return input_ids, attention_mask, dec_input_ids, labels
     
   def training_step(self, batch, batch_idx):
@@ -183,9 +193,9 @@ def _process_sst2_sentence(example):
 
 def _process_race_sentence(example):
   abcd_mapping = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
-  prompt = f'''article: {example['article']}
-  question: {example['question']}
-  options: A: {example['options'][0]}, B: {example['options'][1]}, B: {example['options'][2]}, B: {example['options'][3]}'''
+  prompt = f'''question: {example['question']}
+options: A: {example['options'][0]}, B: {example['options'][1]}, B: {example['options'][2]}, B: {example['options'][3]}
+article: {example['article']}'''
   example['sentence'] = prompt
   example['label'] = abcd_mapping[example['answer']]
   return example
@@ -212,7 +222,7 @@ def load_dataset(dataset_name):
 
 def main():
   # Dataset
-  train_set, valid_set, output_classes = load_dataset('race')
+  train_set, valid_set, output_classes = load_dataset(DATASET)
 
   num_data_workers = max(cpu_count()//2, 1)
   train_loader = torch.utils.data.DataLoader(
@@ -252,14 +262,10 @@ def main():
   )
 
   # Train
-  trainer = L.Trainer(default_root_dir=EXP_NAME,
+  trainer = L.Trainer(default_root_dir=EXP_NAME, num_sanity_val_steps=100,
                       max_epochs=NUM_TRAIN_EPOCHS, val_check_interval=VALIDATION_INTERVAL,
                       logger=loggers, callbacks=[checkpoint_callback, lr_monitor])
   trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
-
-  print('Running Final Accuracy Check')
-  model = LitT5WithFFLoRA.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-  model.eval()
 
 
 if __name__ == "__main__":
