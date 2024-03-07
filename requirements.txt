@@ -2,6 +2,7 @@ datasets
 k-means-constrained
 lightning
 numpy
+omegaconf
 sentencepiece
 scikit-learn
 scipy

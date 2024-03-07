@@ -1,0 +1,20 @@
+exp_name: T5BaseFinetuneRACE
+
+model:
+  t5_variant: t5-base
+  learning_rate: 1e-4
+  lr_scheduler: Constant
+
+  model_modifier_config:
+    base_model_type: unmodified
+    tuning_type: fft
+    ckpt_path: null
+
+data:
+  dataset: race
+  batch_size: 4
+  max_source_length: 1536
+
+trainer:
+  max_epochs: 3
+  val_check_interval: 2000
