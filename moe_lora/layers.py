@@ -63,3 +63,34 @@ class LoRALinearLayer(nn.Module):
                 # Merge the weights
                 self.original_weight.data += ((self.A @ self.B) * self.scaling).data
                 self.merged = True
+
+
+class LoRADenseActDenseLayer(nn.Module):
+    def __init__(self, original_layer, rank, alpha=1.0):
+        super().__init__()
+
+        self.original_layer = original_layer
+        self.act = original_layer.act
+
+        # Low-rank matrices A and B
+        self.in_features = self.original_wi.shape[0]
+        self.out_features = self.original_wo.shape[1]
+        self.rank = rank
+        self.A = nn.Parameter(torch.empty(self.in_features, self.rank))
+        self.B = nn.Parameter(torch.zeros(self.rank, self.out_features))
+        nn.init.normal_(self.A)
+
+        # Scaling factor
+        self.scaling = alpha / self.rank
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}(in_features={self.in_features}, out_features={self.out_features}, lora_rank={self.rank})'
+
+    def forward(self, x):
+        original_out = self.original_layer(x)
+        delta_out = F.linear(x, self.A)
+        delta_out = self.act(delta_out)
+        delta_out = F.linear(delta_out, self.B)
+        delta_out *= self.scaling
+
+        return original_out + delta_out

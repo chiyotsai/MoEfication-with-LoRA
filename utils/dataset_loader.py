@@ -9,7 +9,7 @@ def _tokenize_example(example, tokenizer):
     text=example["sentence"], return_tensors="pt", padding=True)
   example['input_ids'] = example['tokenized_input'].input_ids
   example['attention_mask'] = example['tokenized_input'].attention_mask
-  
+
 
 def _process_sst2_sentence(example, tokenizer=None):
   example['sentence'] = f"sst2 sentence: {example['sentence']}"
@@ -58,7 +58,7 @@ def load_dataset(dataset_name, tokenizer=None):
 
   return train, valid, output_classes
 
-  
+
 def get_output_class_tokens(tokenizer, output_classes):
     num_classes = len(output_classes)
     output_class_tokens = tokenizer(output_classes, return_tensors='pt').input_ids
