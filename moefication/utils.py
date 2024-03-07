@@ -1,6 +1,7 @@
 from typing import DefaultDict
 import sys
 import torch
+import glob
 import os
 import tqdm
 from collections import Counter
@@ -206,99 +207,91 @@ class MLPCenter(BlockCenter):
             patterns.append(np.array(self.labels) == i)
         patterns = torch.Tensor(np.array(patterns)).cuda().float().transpose(0, 1)
 
-        hiddens = load_hidden_states(self.config.folder, self.template.format(self.layer))
-
-        hiddens = hiddens / torch.norm(hiddens, dim=-1).unsqueeze(-1)
-
-        model = torch.nn.Sequential(torch.nn.Linear(hiddens.shape[-1], num_blocks, bias=False),
-            torch.nn.Tanh(),
-            torch.nn.Linear(num_blocks, num_blocks, bias=False))
-
         def weights_init(m):
             if isinstance(m, torch.nn.Linear):
-                if m.weight.shape[-1] == hiddens.shape[-1]:
+                if m.weight.shape[-1] == eval_hiddens.shape[-1]:
                     m.weight.data = torch.from_numpy(centers).float()
                 else:
                     m.weight.data = torch.eye(m.weight.data.shape[0])
                     #torch.nn.init.normal_(m.weight.data)
                 #m.bias.data[:] = 0
 
+        files = glob.glob(os.path.join(self.config.folder, self.template.format(self.layer) + '*'))
+        eval_hiddens = torch.load(files[-1])
+        eval_hiddens = eval_hiddens[torch.randperm(eval_hiddens.shape[0])]
+        eval_hiddens = eval_hiddens[:min(eval_hiddens.shape[0], 2048), :]
+        eval_hiddens = eval_hiddens / torch.norm(eval_hiddens, dim=-1).unsqueeze(-1)
+
+        model = torch.nn.Sequential(torch.nn.Linear(eval_hiddens.shape[-1], num_blocks, bias=False),
+            torch.nn.Tanh(),
+            torch.nn.Linear(num_blocks, num_blocks, bias=False))
         model.apply(weights_init)
-        
         model.cuda()
 
         optim = torch.optim.Adam(model.parameters(), lr=0.01)
-
         loss_func = torch.nn.BCEWithLogitsLoss()
 
-        save_acc = [0, 0]
-        save_epoch = [-1, -1]
+        best_acc = 0
 
         self.centers = model
+        epoch = -1
+        for fname in files[:-1]:
+            hiddens = torch.load(fname)
+            hiddens = hiddens / torch.norm(hiddens, dim=-1).unsqueeze(-1)
 
-        train_hiddens = hiddens[:hiddens.shape[0] // 10 * 9, :]
-        #pos_max = None
+            train_hiddens = hiddens
 
-        last_epoch = -1
+            epoch_bar = tqdm.tqdm(range(15))
+            for _ in epoch_bar:
+                epoch += 1
+                train_hiddens=train_hiddens[torch.randperm(train_hiddens.size()[0])]
 
-        epoch_bar = tqdm.tqdm(range(15))
-        for epoch in epoch_bar:
-            train_hiddens=train_hiddens[torch.randperm(train_hiddens.size()[0])]
+                pbar = range(0, train_hiddens.shape[0], 512)
+                for i in pbar:
+                    model.zero_grad()
 
-            pbar = range(0, train_hiddens.shape[0], 512)
-            for i in pbar:
-                model.zero_grad()
-
-                input = train_hiddens[i:i+512, :].float().clone().detach().cuda()
-                with torch.no_grad():
-                    acts = torch.relu((torch.matmul(input, ffn_weight))).float()
-                    scores = torch.matmul(acts, patterns)
-                    scores /= scores.max()
-                pred = model(input)
-                loss = loss_func(pred.view(-1), scores.view(-1))
-              
-                loss.backward()
-                optim.step()
-
-            acc = []
-            
-            for i in range(hiddens.shape[0] // 10 * 9, hiddens.shape[0], 512):
-                with torch.no_grad():
-                    input = hiddens[i:i+512, :].float().cuda()
-                    acts = torch.relu((torch.matmul(input, ffn_weight))).float() # 512, 4096
-
-                    scores = torch.matmul(acts, patterns) # 512, num_blocks, vary from 0 to 1
-                    mask, labels = torch.topk(scores, k=int(num_blocks*0.2), dim=-1)
-                    mask = mask > 0
-                    
+                    input = train_hiddens[i:i+512, :].float().clone().detach().cuda()
+                    with torch.no_grad():
+                        acts = torch.relu((torch.matmul(input, ffn_weight))).float()
+                        scores = torch.matmul(acts, patterns)
+                        scores /= scores.max()
                     pred = model(input)
-                    pred = torch.topk(pred, k=int(num_blocks*0.2), dim=-1)[1]
+                    loss = loss_func(pred.view(-1), scores.view(-1))
+                
+                    loss.backward()
+                    optim.step()
 
-                    total_mask = mask.sum(axis=1)
-                    total_scores = scores.sum(axis=1)
-                    pred_scores = torch.gather(scores, dim=1, index=pred).sum(axis=1)
-                    total_scores = torch.masked_select(total_scores, mask=(total_mask!=0))
-                    pred_scores = torch.masked_select(pred_scores, mask=(total_mask!=0))
-                    acc_vec = pred_scores/total_scores
-                    acc.extend(acc_vec.tolist())
-            
-            cur_acc = np.mean(acc)
-            if cur_acc > save_acc[0]:
-                self.del_ckpt(save_epoch[1])
-                save_acc = [cur_acc, save_acc[0]]
-                save_epoch = [epoch, save_epoch[0]]
-                self.acc = save_acc[1]
-                self.save(epoch)
-            elif cur_acc > save_acc[1]:
-                self.del_ckpt(save_epoch[1])
-                save_acc = [save_acc[0], cur_acc]
-                save_epoch = [save_epoch[0], epoch]
-                self.acc = save_acc[1]
-                self.save(epoch)
-            epoch_bar.set_description(f"Current acc {cur_acc:.4}, best_acc: {save_acc[0]:.4}")
-        os.system("rm -rf {}_{}_{}".format(self.filename, self.type, save_epoch[0]))
-        os.system("cp {0}_{1}_{2} {0}_{1}".format(self.filename, self.type, save_epoch[1]))
-        os.system("rm {0}_{1}_{2}".format(self.filename, self.type, save_epoch[1]))
+                acc = []
+                
+                for i in range(0, eval_hiddens.shape[0], 512):
+                    with torch.no_grad():
+                        input = eval_hiddens[i:i+512, :].float().cuda()
+                        acts = torch.relu((torch.matmul(input, ffn_weight))).float() # 512, 4096
+
+                        scores = torch.matmul(acts, patterns) # 512, num_blocks, vary from 0 to 1
+                        mask, labels = torch.topk(scores, k=int(num_blocks*0.2), dim=-1)
+                        mask = mask > 0
+                        
+                        pred = model(input)
+                        pred = torch.topk(pred, k=int(num_blocks*0.2), dim=-1)[1]
+
+                        total_mask = mask.sum(axis=1)
+                        total_scores = scores.sum(axis=1)
+                        pred_scores = torch.gather(scores, dim=1, index=pred).sum(axis=1)
+                        total_scores = torch.masked_select(total_scores, mask=(total_mask!=0))
+                        pred_scores = torch.masked_select(pred_scores, mask=(total_mask!=0))
+                        acc_vec = pred_scores/total_scores
+                        acc.extend(acc_vec.tolist())
+                
+                cur_acc = np.mean(acc)
+                if cur_acc > best_acc:
+                    best_acc = cur_acc
+                    self.acc = cur_acc
+                    self.save(epoch)
+                    os.system("cp {0}_{1}_{2} {0}_{1}".format(self.filename, self.type, epoch))
+                    self.del_ckpt(epoch)
+
+                epoch_bar.set_description(f"Current acc {cur_acc:.4f}, best_acc: {best_acc:.4}")
     
     def del_ckpt(self, epoch):
         os.system("rm -rf {}_{}_{}".format(self.filename, self.type, epoch))
