@@ -1,0 +1,25 @@
+exp_name: moe-t5-base-race-dad-lora
+
+model:
+  t5_variant: t5-base
+  learning_rate: 2e-3
+  lr_scheduler: Constant
+
+  model_modifier_config:
+    base_model_type: moe
+    k: 20
+    moe_params_path: results/t5-base/race/param_split
+
+    tuning_type: dense_act_dense_lora
+    lora_rank: 32
+
+    ckpt_path: lightning_logs/T5BaseFinetuneRACE/2024-03-02-19:16:12/checkpoints/T5BaseFinetuneRACE-global_step=0-epoch=02-step=64000-ckpt_metric=0.715.ckpt
+
+data:
+  dataset: race
+  batch_size: 4
+  max_source_length: 1536
+
+trainer:
+  max_epochs: 3
+  val_check_interval: 2000

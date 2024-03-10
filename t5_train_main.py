@@ -19,7 +19,7 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--config', type=str, default='configs/moe_t5_base_race_lora_train.yaml', help='path to the config file for training')
+parser.add_argument('--config', type=str, default='configs/moe_t5_base_race_dad_lora_train.yaml', help='path to the config file for training')
 
 
 class LitT5(L.LightningModule):
@@ -138,8 +138,17 @@ class LitT5(L.LightningModule):
     self.accuracy_metric.reset()
     self.loss_metric.reset()
 
+    
+def SaveConfig(config, save_dir):
+  if not os.path.exists(save_dir):
+    os.mkdir(save_dir)
+  with open(os.path.join(save_dir, 'config.yaml'), 'w') as f:
+    OmegaConf.save(config=config, f=f)
+
 
 def main():
+  torch.set_float32_matmul_precision('medium')
+
   args = parser.parse_args()
   configs = OmegaConf.load(args.config)
 
@@ -164,6 +173,8 @@ def main():
   )
 
   curr_time = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+  dir_name = os.path.join('lightning_logs', configs.exp_name, curr_time)
+  SaveConfig(configs, dir_name)
 
   # saves top-K checkpoints based on validation accuracy
   checkpoint_callback = L.pytorch.callbacks.ModelCheckpoint(
@@ -191,6 +202,7 @@ def main():
                       val_check_interval=configs.trainer.val_check_interval,
                       logger=loggers, callbacks=[checkpoint_callback, lr_monitor])
   trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+
 
   print(checkpoint_callback.best_model_path)
 

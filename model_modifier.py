@@ -80,19 +80,6 @@ class MoEModifier(ModifierBase):
         modify_ffn(ffn, path)
 
 
-def replace_linear_with_lora_linear(ffn, lora_rank, useBias=False):
-    if hasattr(ffn, 'wi'):
-        original_weight = ffn.wi.weight.data
-        lora_layer = LoRALinearLayer(original_weight, lora_rank, useBias=useBias).cuda()
-        ffn.wi = lora_layer
-
-    if hasattr(ffn, 'wo'):
-        original_weight = ffn.wo.weight.data
-        lora_layer = LoRALinearLayer(original_weight, lora_rank, useBias=useBias).cuda()
-        ffn.wo = lora_layer
-    return ffn
-
-
 def dfs_dense_relu_dense(model, leaf_callback, **kwargs):
   """Traverse through the model tree and call leaf_callback on DenseReluDense."""
   for _, module in model.named_children():
@@ -123,7 +110,20 @@ class AddLoRA(SFTBase):
 
   def __call__(self, model):
     super().__call__(model)
-    dfs_dense_relu_dense(model, replace_linear_with_lora_linear, self.lora_rank, useBias=False)
+
+    def _replace_linear_with_lora_linear(ffn, lora_rank, useBias=False):
+        if hasattr(ffn, 'wi'):
+            original_weight = ffn.wi.weight.data
+            lora_layer = LoRALinearLayer(original_weight, lora_rank, useBias=useBias).cuda()
+            ffn.wi = lora_layer
+
+        if hasattr(ffn, 'wo'):
+            original_weight = ffn.wo.weight.data
+            lora_layer = LoRALinearLayer(original_weight, lora_rank, useBias=useBias).cuda()
+            ffn.wo = lora_layer
+        return ffn
+
+    dfs_dense_relu_dense(model, _replace_linear_with_lora_linear, lora_rank=self.lora_rank, useBias=False)
     opt_params_patterns = [r'.*\.A', r'.*\.B']
     return opt_params_patterns
 
@@ -140,7 +140,10 @@ class AddDenseActDenseLoRA(SFTBase):
       assert isinstance(dense_act_dense, T5DenseActDense)
       return LoRADenseActDenseLayer(dense_act_dense, lora_rank)
 
-    dfs_dense_relu_dense(model, _replace_with_lora, self.lora_rank)
+    dfs_dense_relu_dense(model, _replace_with_lora, lora_rank=self.lora_rank)
+
+    opt_params_patterns = [r'.*\.A', r'.*\.B']
+    return opt_params_patterns
 
 
 def get_model_modifier(base_model_type,
