@@ -73,11 +73,12 @@ class LoRADenseActDenseLayer(nn.Module):
         self.act = original_layer.act
 
         # Low-rank matrices A and B
-        self.in_features = self.original_wi.shape[0]
-        self.out_features = self.original_wo.shape[1]
+        self.in_features = self.original_layer.wi.weight.shape[1]
+        self.out_features = self.original_layer.wo.weight.shape[0]
         self.rank = rank
-        self.A = nn.Parameter(torch.empty(self.in_features, self.rank))
-        self.B = nn.Parameter(torch.zeros(self.rank, self.out_features))
+        # Tranposing because F.linear tranposes the weight
+        self.A = nn.Parameter(torch.empty(self.rank, self.in_features))
+        self.B = nn.Parameter(torch.zeros(self.out_features, self.rank))
         nn.init.normal_(self.A)
 
         # Scaling factor
