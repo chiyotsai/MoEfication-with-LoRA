@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 import torchmetrics
 import transformers
+import tqdm
 import utils
 
 import model_modifier
@@ -35,6 +36,7 @@ class LitT5(L.LightningModule):
 
     self.output_classes = output_classes
     self.output_class_tokens = utils.dataset_loader.get_output_class_tokens(self.tokenizer, output_classes)
+    self.output_class_tokens = [class_tokens.to('cuda') for class_tokens in self.output_class_tokens]
 
     self.loss_metric = torchmetrics.aggregation.MeanMetric()
     self.accuracy_metric = torchmetrics.classification.Accuracy(task='multiclass', num_classes=len(self.output_classes))
@@ -74,9 +76,7 @@ class LitT5(L.LightningModule):
       'lr_scheduler': lr_scheduler_config
     }
 
-  def forward(self, x):
-    input_ids = self.tokenizer(
-      text=[x['sentence']], return_tensors="pt").input_ids.to(self.device)
+  def forward(self, input_ids):
     dec_input_ids = torch.tensor([self.tokenizer.pad_token_id]).to(self.device)
     output = self.model(input_ids=input_ids, decoder_input_ids=dec_input_ids)
     return output
@@ -87,7 +87,9 @@ class LitT5(L.LightningModule):
       text=batch["sentence"], return_tensors="pt", padding=True)
     input_ids = tokenized.input_ids.to(self.device)
     attention_mask = tokenized.attention_mask.to(self.device)
-    dec_input_ids = torch.tensor(len(labels) * [[self.tokenizer.pad_token_id]]).to(self.device)
+    # dec_input_ids = torch.tensor(len(labels) * [[self.tokenizer.pad_token_id]]).to(self.device)
+    dec_input_ids = self.tokenizer(
+      text=batch["label_str"], return_tensors="pt", padding=True).input_ids.to(self.device)
     return input_ids, attention_mask, dec_input_ids, labels
 
   def training_step(self, batch, batch_idx):
@@ -95,8 +97,9 @@ class LitT5(L.LightningModule):
 
     output = self.model(input_ids=input_ids, attention_mask=attention_mask,
                         labels=dec_input_ids)
-    logits = output.logits.squeeze(dim=1)[:, self.output_class_tokens]
-    loss = F.cross_entropy(logits, labels)
+    # logits = output.logits.squeeze(dim=1)[:, self.output_class_tokens]
+    # loss = F.cross_entropy(logits, labels)
+    loss = output.loss
 
     self.loggers[0].log_metrics(
       {'loss': loss},
@@ -106,23 +109,49 @@ class LitT5(L.LightningModule):
     return loss
 
   def validation_step(self, batch, batch_idx):
+    self.model.eval()
     input_ids, attention_mask, dec_input_ids, labels = self._load_one_batch(batch)
+
+    # output = self.model(input_ids=input_ids, attention_mask=attention_mask,
+    #                     labels=dec_input_ids)
+    # logits = output.logits.squeeze(dim=1)[:, self.output_class_tokens]
+    # preds = torch.argmax(logits, 1)
+
+    # logits_loss = F.cross_entropy(logits, labels)
+    # accuracy = (preds == labels).float().mean()
 
     output = self.model(input_ids=input_ids, attention_mask=attention_mask,
                         labels=dec_input_ids)
-    logits = output.logits.squeeze(dim=1)[:, self.output_class_tokens]
-    preds = torch.argmax(logits, 1)
+    encoder_last_hidden_state = output.encoder_last_hidden_state
+    loss = output.loss
 
-    logits_loss = F.cross_entropy(logits, labels)
+    class_logits = []
+    for class_token in self.output_class_tokens:
+      class_token = class_token.repeat((input_ids.size(0), 1))
+      output = self.model(encoder_outputs=(encoder_last_hidden_state,),
+                          attention_mask=attention_mask,
+                          labels=class_token)
+      logits = output.logits
+      # topk = logits.topk(k=40)[0][:, :, -1][:, :, None]
+      # topk_mask = logits < topk
+      # logits.data.masked_fill(topk_mask.bool(), -float('inf'))
+      
+      probs = torch.softmax(logits, dim=2)
+      logits = torch.log(probs)
+      logits = torch.gather(logits, dim=2, index=class_token[:, :, None]).squeeze(dim=2)
+      class_logits.append(logits.sum(dim=1, keepdim=True))
+
+    class_logits = torch.hstack(class_logits)
+    preds = torch.argmax(class_logits, 1)
     accuracy = (preds == labels).float().mean()
 
     # Setting logger to False
-    self.log('ckpt_metric', accuracy, batch_size=labels.size(0), logger=False)
+    self.log('ckpt_metric', accuracy, batch_size=labels.size(0), logger=True)
 
-    self.accuracy_metric(preds=logits, target=labels)
-    self.loss_metric.update(logits_loss)
+    self.accuracy_metric(preds=class_logits, target=labels)
+    self.loss_metric.update(loss)
 
-    return logits_loss
+    return loss
 
   def on_validation_epoch_end(self):
     accuracy = self.accuracy_metric.compute()
@@ -141,7 +170,7 @@ class LitT5(L.LightningModule):
     
 def SaveConfig(config, save_dir):
   if not os.path.exists(save_dir):
-    os.mkdir(save_dir)
+    os.makedirs(save_dir)
   with open(os.path.join(save_dir, 'config.yaml'), 'w') as f:
     OmegaConf.save(config=config, f=f)
 
@@ -153,7 +182,12 @@ def main():
   configs = OmegaConf.load(args.config)
 
   # Dataset
-  train_set, valid_set, output_classes = utils.dataset_loader.load_dataset(configs.data.dataset)
+  train_set, valid_set, output_classes = \
+    utils.dataset_loader.load_dataset(
+      configs.data.dataset,
+      # tokenizer=T5Tokenizer.from_pretrained(configs.model.t5_variant,
+      #                                       model_max_length=configs.data.max_source_length)
+    )
 
   # Model
   model = LitT5(t5_variant=configs.model.t5_variant, output_classes=output_classes,
@@ -205,7 +239,7 @@ def main():
 
 
   print(checkpoint_callback.best_model_path)
-
+    
 
 if __name__ == "__main__":
   main()

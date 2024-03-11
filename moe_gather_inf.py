@@ -93,7 +93,14 @@ def main():
     args = parser.parse_args()
 
     model_name = args.model_name
-    model_max_length = (2048 + 1024) // 2 if args.dataset == 'race' else 512
+
+    if args.dataset == 'race':
+        model_max_length = (2048 + 1024) // 2
+    elif args.dataset in ['mnli', 'multi_nli']:
+        model_max_length = 1024
+    else:
+        model_max_length = 512
+
     tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=model_max_length)
     model = T5ForConditionalGeneration.from_pretrained(model_name).cuda()
     if args.checkpoint:
@@ -101,6 +108,7 @@ def main():
 
     train, _, output_classes = dataset_loader.load_dataset(args.dataset, tokenizer=tokenizer)
     output_class_tokens = dataset_loader.get_output_class_tokens(tokenizer, output_classes)
+    output_class_tokens = [class_token.cuda() for class_token in output_class_tokens]
 
     results = change_forward(model)
 
@@ -113,18 +121,29 @@ def main():
         if args.num_info_samples != -1 and step > args.num_info_samples:
             break
 
-        input_ids = tokenizer(instance['sentence'], return_tensors="pt").input_ids.cuda()
-        dec_input_ids = tokenizer("<extra_id_0>", return_tensors="pt").input_ids.cuda()[:, :1]
+        input_ids = torch.tensor(instance['input_ids']).cuda()
+        encoder_last_hidden_state = None
+        class_logits = []
+        for class_token in output_class_tokens:
+            if encoder_last_hidden_state is None:
+                output = model(input_ids=input_ids, labels=class_token)
+                encoder_last_hidden_state = output.encoder_last_hidden_state
+            else:
+                output = model(encoder_outputs=(encoder_last_hidden_state,),
+                               labels=class_token)
+            
+            probs = torch.softmax(output.logits, dim=2)
+            logits = torch.log(probs)
+            logits = torch.gather(logits, dim=2, index=class_token[:, :, None]).squeeze(dim=2)
+            class_logits.append(logits.sum(dim=1, keepdim=True))
 
-        output = model(input_ids=input_ids, labels=dec_input_ids)
-        logits = output.logits[:, 0, output_class_tokens]
-        pred = torch.argmax(logits, 1)
-
-        num_correct += (pred == instance['label']).item()
+        class_logits = torch.hstack(class_logits)
+        pred = torch.argmax(class_logits, 1)
 
         if step != 0 and step % args.shard_file_samples == 0:
             write_and_clear_hidden_states(results, args.res_path)
 
+        num_correct += (pred == instance['label']).item()
         pbar.set_description(f'Acc: {num_correct/(step + 1):.3f}')
 
     print(f'Acc: {num_correct/(step + 1):.3f}')

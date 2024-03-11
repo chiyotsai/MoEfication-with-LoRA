@@ -2,7 +2,7 @@ exp_name: moe-t5-base-race-dad-lora
 
 model:
   t5_variant: t5-base
-  learning_rate: 2e-3
+  learning_rate: 1e-3
   lr_scheduler: Constant
 
   model_modifier_config:

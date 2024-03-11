@@ -21,6 +21,60 @@ class ModifierBase():
       LoadCheckpoint(model, self.ckpt_path)
 
 
+class MoEWithGTModifier(ModifierBase):
+  "MoE-fy the t5 model."
+  def __init__(self, moe_params_path, k, **kwargs):
+    super().__init__(**kwargs)
+    self.moe_params_path = moe_params_path
+    self.k = k
+
+  def __call__(self, model):
+    super().__call__(model)
+
+    def _forward(ffn_self, hidden_states):
+        hidden_states = ffn_self.wi(hidden_states)
+        hidden_states = ffn_self.act(hidden_states)
+
+        if ffn_self.patterns is not None:
+            # golden
+            k = ffn_self.k
+            bsz, seq_len, hidden_size = hidden_states.shape
+            hidden_states_relu = hidden_states.clone()
+            hidden_states_relu = hidden_states_relu.view(-1, hidden_size)
+            score = torch.matmul(hidden_states_relu, ffn_self.patterns.transpose(0, 1))
+            labels = torch.topk(score, k=k, dim=-1)[1].view(bsz, seq_len, k)
+            cur_mask = torch.nn.functional.embedding(labels, ffn_self.patterns).sum(-2)
+            hidden_states[cur_mask == False] = 0  
+             
+        hidden_states = ffn_self.dropout(hidden_states)
+        hidden_states = ffn_self.wo(hidden_states)
+        return hidden_states
+
+    def modify_ffn(ffn, path):
+        assert type(ffn) == T5DenseActDense
+        labels = torch.load(path)
+        cluster_num = max(labels)+1
+        patterns = []
+        for i in range(cluster_num):
+            patterns.append(np.array(labels) == i)
+        ffn.patterns = torch.Tensor(np.array(patterns)).cuda()
+        ffn.k = self.k
+        ffn.forward_old = ffn.forward
+        ffn.forward = types.MethodType(_forward, ffn)   
+
+    # encoder
+    for layer_idx, layer in enumerate(model.encoder.block):
+        ffn = layer.layer[1].DenseReluDense
+        path = os.path.join(self.moe_params_path, 'encoder.block.{}.layer.1.DenseReluDense.wi.weight'.format(layer_idx))
+        modify_ffn(ffn, path)
+
+    #decoder
+    for layer_idx, layer in enumerate(model.decoder.block):
+        ffn = layer.layer[2].DenseReluDense
+        path = os.path.join(self.moe_params_path, 'decoder.block.{}.layer.2.DenseReluDense.wi.weight'.format(layer_idx))
+        modify_ffn(ffn, path)
+
+
 class MoEModifier(ModifierBase):
   "MoE-fy the t5 model."
   def __init__(self, moe_params_path, k, **kwargs):

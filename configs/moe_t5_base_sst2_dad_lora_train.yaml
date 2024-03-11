@@ -1,0 +1,25 @@
+exp_name: moe-t5-base-sst2-dad-lora
+
+model:
+  t5_variant: t5-base
+  learning_rate: 1e-3
+  lr_scheduler: Constant
+
+  model_modifier_config:
+    base_model_type: moe
+    k: 20
+    moe_params_path: results/t5-base/sst2/param_split
+
+    tuning_type: dense_act_dense_lora
+    lora_rank: 32
+
+    ckpt_path: null
+
+data:
+  dataset: sst2
+  batch_size: 64
+  max_source_length: 512
+
+trainer:
+  max_epochs: 3
+  val_check_interval: 200
