@@ -7,7 +7,6 @@ import tqdm
 from fvcore.nn import FlopCountAnalysis
 from multiprocessing import cpu_count
 from transformers import T5Tokenizer, T5ForConditionalGeneration
-from torch import profiler
 
 import model_modifier
 from utils import dataset_loader
@@ -21,7 +20,7 @@ parser.add_argument('--res_path', type=str, default='results/t5-base/base', help
 parser.add_argument('--k', type=int, default=20, help='Number of experts to activate')
 parser.add_argument('--eval_type', type=str, choices=['base', 'moe_gt', 'moe_mlp'], help='Number of experts to activate')
 parser.add_argument('--num_batches', type=int, default=None, help='Number of batches used for evaluation')
-parser.add_argument('--batch_size', type=int, default=872, help='Batch size for eval')
+parser.add_argument('--batch_size', type=int, default=1, help='Batch size for eval')
 
 
 def main():
@@ -70,61 +69,60 @@ def main():
     inference_time = 0
     flops = 0
     with torch.no_grad():
-        with profiler.profile(activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA], record_shapes=True) as prof:
-            for step, instance in enumerate(pbar):
-                if step >= args.num_batches:
-                    break
-                tokenized = tokenizer(text=instance["sentence"], return_tensors="pt", padding=True)
-                input_ids = tokenized.input_ids.cuda()
-                attention_mask = tokenized.attention_mask.cuda()
-                encoder_last_hidden_state = None
-                class_logits = []
-                for class_token in output_class_tokens:
-                    class_token = class_token.repeat((input_ids.size(0), 1))
-                    if encoder_last_hidden_state is None:
-                        start_time = time.time()
-                        with profiler.record_function("model_inference"):
-                            output = model(input_ids=input_ids, attention_mask=attention_mask, labels=class_token)
-                        end_time = time.time()
-                        encoder_last_hidden_state = output.encoder_last_hidden_state
-                    else:
-                        start_time = time.time()
-                        with profiler.record_function("model_inference"):
-                            output = model(encoder_outputs=(encoder_last_hidden_state,),
-                                           attention_mask=attention_mask,
-                                           labels=class_token)
-                        end_time = time.time()
-                    inference_time += end_time - start_time
+        for step, instance in enumerate(pbar):
+            if step >= args.num_batches:
+                break
+            tokenized = tokenizer(text=instance["sentence"], return_tensors="pt", padding=True)
+            input_ids = tokenized.input_ids.cuda()
+            attention_mask = tokenized.attention_mask.cuda()
+            encoder_last_hidden_state = None
+            class_logits = []
+            for class_token in output_class_tokens:
+                class_token = class_token.repeat((input_ids.size(0), 1))
+                if encoder_last_hidden_state is None:
+                    start_time = time.time()
+                    output = model(input_ids=input_ids, attention_mask=attention_mask, labels=class_token)
+                    end_time = time.time()
+                    encoder_last_hidden_state = output.encoder_last_hidden_state
+                else:
+                    start_time = time.time()
+                    output = model(encoder_outputs=(encoder_last_hidden_state,),
+                                    attention_mask=attention_mask,
+                                    labels=class_token)
+                    end_time = time.time()
+                inference_time += end_time - start_time
 
-                    if encoder_last_hidden_state is None:
-                        flops += FlopCountAnalysis(model, (input_ids, attention_mask, None, None, None,
-                                                           None, None, None, None, None,
-                                                           None, class_token,)).total()
-                    else:
-                        flops += FlopCountAnalysis(model,
-                                                (None, attention_mask, None, None, None,
-                                                None, None, (encoder_last_hidden_state,), None, None,
-                                                None, class_token,
-                                                )).total()
-                    
-                    probs = torch.softmax(output.logits, dim=2)
-                    logits = torch.log(probs)
-                    logits = torch.gather(logits, dim=2, index=class_token[:, :, None]).squeeze(dim=2)
-                    class_logits.append(logits.sum(dim=1, keepdim=True))
+                if encoder_last_hidden_state is None:
+                    analyzer = FlopCountAnalysis(model, (input_ids, attention_mask, None, None, None,
+                                                        None, None, None, None, None,
+                                                        None, class_token,))
+                else:
+                    analyzer = FlopCountAnalysis(model,
+                                            (None, attention_mask, None, None, None,
+                                            None, None, (encoder_last_hidden_state,), None, None,
+                                            None, class_token,
+                                            ))
+                
+                analyzer.tracer_warnings('none')
+                flops += analyzer.total()
+                probs = torch.softmax(output.logits, dim=2)
+                logits = torch.log(probs)
+                logits = torch.gather(logits, dim=2, index=class_token[:, :, None]).squeeze(dim=2)
+                class_logits.append(logits.sum(dim=1, keepdim=True))
 
-                class_logits = torch.hstack(class_logits)
-                pred = torch.argmax(class_logits, 1)
+            class_logits = torch.hstack(class_logits)
+            pred = torch.argmax(class_logits, 1)
 
-                num_correct += (pred == instance['label'].cuda()).sum().item()
+            num_correct += (pred == instance['label'].cuda()).sum().item()
 
-                pbar.set_description(f'Acc: {num_correct/((step + 1) * args.batch_size):.3f}')
+            pbar.set_description(f'Acc: {num_correct/((step + 1) * args.batch_size):.3f}')
 
-    accuracy = num_correct / len(valid)
-    inference_time = inference_time / len(valid)
-    flops = flops / len(valid)
+    accuracy = num_correct / (args.batch_size * args.num_batches)
+    inference_time = inference_time / (args.batch_size * args.num_batches)
+    flops = flops / (args.batch_size * args.num_batches)
     print(f'Acc: {accuracy:.3f}')
 
-    data_to_save = f"Accuracy: {accuracy}\n\nInference Time: {inference_time}\n\nAverage FLOPs per Example: {flops}\n\nProfiler Summary:\n{prof.key_averages().table(sort_by='cuda_time_total')}\n"
+    data_to_save = f"Accuracy: {accuracy}\n\nInference Time: {inference_time}\n\nAverage FLOPs per Example: {flops}\n\n"
     save_dir = 'analysis'
     file_path = f"{save_dir}/{args.model_name}_{args.dataset}_k{args.k}_{args.eval_type}.txt"
     if not os.path.exists(save_dir):
