@@ -54,6 +54,7 @@ def main():
         raise NotImplementedError(f'Unexpected model type: {args.eval_type}')
 
     modifier(model)
+    model.cuda()
 
     _, valid, output_classes = dataset_loader.load_dataset(args.dataset)
     output_class_tokens = dataset_loader.get_output_class_tokens(tokenizer, output_classes)

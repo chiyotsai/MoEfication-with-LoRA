@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from transformers.models.t5.modeling_t5 import T5LayerFF, T5DenseActDense
 
+from moefication import efficient_moe
 from moe_lora import LoRALinearLayer, LoRADenseActDenseLayer
 from utils.utils import LoadCheckpoint
 
@@ -75,6 +76,7 @@ class MoEWithGTModifier(ModifierBase):
         modify_ffn(ffn, path)
 
 
+
 class MoEModifier(ModifierBase):
   "MoE-fy the t5 model."
   def __init__(self, moe_params_path, k, **kwargs):
@@ -124,14 +126,21 @@ class MoEModifier(ModifierBase):
     # encoder
     for layer_idx, layer in enumerate(model.encoder.block):
         ffn = layer.layer[1].DenseReluDense
-        path = os.path.join(self.moe_params_path, 'encoder.block.{}.layer.1.DenseReluDense.wi.weight'.format(layer_idx))
-        modify_ffn(ffn, path)
+        layer.layer[1].DenseReluDense = efficient_moe.MoEDenseActDense(
+          dim_in=ffn.wi.weight.shape[1], dim_ff=ffn.wi.weight.shape[0],
+          dim_out=ffn.wo.weight.shape[0], dropout_p=0, num_expert=96, top_k=20)
+        # path = os.path.join(self.moe_params_path, 'encoder.block.{}.layer.1.DenseReluDense.wi.weight'.format(layer_idx))
+        # modify_ffn(ffn, path)
 
     #decoder
     for layer_idx, layer in enumerate(model.decoder.block):
         ffn = layer.layer[2].DenseReluDense
-        path = os.path.join(self.moe_params_path, 'decoder.block.{}.layer.2.DenseReluDense.wi.weight'.format(layer_idx))
-        modify_ffn(ffn, path)
+        ffn = layer.layer[1].DenseReluDense
+        layer.layer[1].DenseReluDense = efficient_moe.MoEDenseActDense(
+          dim_in=ffn.wi.weight.shape[1], dim_ff=ffn.wi.weight.shape[0],
+          dim_out=ffn.wo.weight.shape[0], dropout_p=0, num_expert=96, top_k=20)
+        #path = os.path.join(self.moe_params_path, 'decoder.block.{}.layer.2.DenseReluDense.wi.weight'.format(layer_idx))
+        #modify_ffn(ffn, path)
 
 
 def dfs_dense_relu_dense(model, leaf_callback, **kwargs):
