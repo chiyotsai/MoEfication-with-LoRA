@@ -116,9 +116,10 @@ def main():
         os.makedirs(args.res_path)
 
     num_correct = 0
-    pbar = tqdm.tqdm(train)
+    num_info_samples = args.num_info_samples if args.num_info_samples > 0 else len(train)
+    pbar = tqdm.tqdm(train, total=num_info_samples)
     for step, instance in enumerate(pbar):
-        if args.num_info_samples != -1 and step > args.num_info_samples:
+        if step > num_info_samples:
             break
 
         input_ids = torch.tensor(instance['input_ids']).cuda()

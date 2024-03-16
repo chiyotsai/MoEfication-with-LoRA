@@ -66,6 +66,9 @@ class LayerSplit:
         self.ffn_weight = load_ffn_weight(self.config.filename, self.template, self.layer)
         self.neuron_num = self.ffn_weight.shape[0]
         self.split_size = self.neuron_num // self.config.split_num
+        if self.split_size * self.config.split_num != self.neuron_num:
+            raise ValueError(f'Neural Number {self.neuron_num} is nodivisible by {self.config.split_num}!')
+
         assert self.split_size * self.config.split_num == self.neuron_num
 
 class RandomSplit(LayerSplit):

@@ -17,6 +17,7 @@ parser.add_argument('--model_name', type=str, default='t5-base', help='model nam
 parser.add_argument('--dataset', type=str, default='sst2', help='dataset used to for evaluation')
 parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint to load the model rom')
 parser.add_argument('--res_path', type=str, default='results/t5-base/base', help='path to store the results of moefication')
+parser.add_argument('--num-expert', type=int, default=96, help='Total number of experts')
 parser.add_argument('--k', type=int, default=20, help='Number of experts to activate')
 parser.add_argument('--eval_type', type=str, choices=['base', 'moe_gt', 'moe_mlp'], help='Number of experts to activate')
 parser.add_argument('--num_batches', type=int, default=None, help='Number of batches used for evaluation')
@@ -42,8 +43,9 @@ def main():
             ckpt_path=args.checkpoint)
     elif args.eval_type == 'moe_gt':
         params_path = os.path.join(args.res_path, 'param_split')
-        modifier = model_modifier.MoEWithGTModifier(
+        modifier = model_modifier.MoEModifier(
             ckpt_path=args.checkpoint, k=args.k,
+            moe_type='gt',
             moe_params_path=params_path)
     elif args.eval_type == 'moe_mlp':
         params_path = os.path.join(args.res_path, 'param_split')
@@ -65,13 +67,14 @@ def main():
         valid, batch_size=args.batch_size, shuffle=False,
     num_workers=max(cpu_count()//2, 1))
 
-    pbar = tqdm.tqdm(valid_loader, total=args.num_batches)
+    num_batches = args.num_batches if args.num_batches > 0 else len(valid) // args.batch_size
+    pbar = tqdm.tqdm(valid_loader, total=num_batches)
     model.eval()
     inference_time = 0
     flops = 0
     with torch.no_grad():
         for step, instance in enumerate(pbar):
-            if step >= args.num_batches:
+            if step >= num_batches:
                 break
             tokenized = tokenizer(text=instance["sentence"], return_tensors="pt", padding=True)
             input_ids = tokenized.input_ids.cuda()
@@ -93,19 +96,20 @@ def main():
                     end_time = time.time()
                 inference_time += end_time - start_time
 
-                if encoder_last_hidden_state is None:
-                    analyzer = FlopCountAnalysis(model, (input_ids, attention_mask, None, None, None,
-                                                        None, None, None, None, None,
-                                                        None, class_token,))
-                else:
-                    analyzer = FlopCountAnalysis(model,
-                                            (None, attention_mask, None, None, None,
-                                            None, None, (encoder_last_hidden_state,), None, None,
-                                            None, class_token,
-                                            ))
+                # if encoder_last_hidden_state is None:
+                #     analyzer = FlopCountAnalysis(model, (input_ids, attention_mask, None, None, None,
+                #                                         None, None, None, None, None,
+                #                                         None, class_token,))
+                # else:
+                #     analyzer = FlopCountAnalysis(model,
+                #                             (None, attention_mask, None, None, None,
+                #                             None, None, (encoder_last_hidden_state,), None, None,
+                #                             None, class_token,
+                #                             ))
                 
-                analyzer.tracer_warnings('none')
-                flops += analyzer.total()
+                # analyzer.tracer_warnings('none')
+                # flops += analyzer.total()
+
                 probs = torch.softmax(output.logits, dim=2)
                 logits = torch.log(probs)
                 logits = torch.gather(logits, dim=2, index=class_token[:, :, None]).squeeze(dim=2)
@@ -118,14 +122,14 @@ def main():
 
             pbar.set_description(f'Acc: {num_correct/((step + 1) * args.batch_size):.3f}')
 
-    accuracy = num_correct / (args.batch_size * args.num_batches)
-    inference_time = inference_time / (args.batch_size * args.num_batches)
-    flops = flops / (args.batch_size * args.num_batches)
+    accuracy = num_correct / (args.batch_size * num_batches)
+    inference_time = inference_time / (args.batch_size * num_batches)
+    flops = flops / (args.batch_size * num_batches)
     print(f'Acc: {accuracy:.3f}')
 
     data_to_save = f"Accuracy: {accuracy}\n\nInference Time: {inference_time}\n\nAverage FLOPs per Example: {flops}\n\n"
     save_dir = 'analysis'
-    file_path = f"{save_dir}/{args.model_name}_{args.dataset}_k{args.k}_{args.eval_type}.txt"
+    file_path = f"{save_dir}/{args.model_name}_{args.dataset}_e{args.num_expert}_k{args.k}_{args.eval_type}.txt"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     with open(file_path, "w") as file:

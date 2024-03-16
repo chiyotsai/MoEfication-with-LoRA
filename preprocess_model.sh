@@ -4,22 +4,35 @@ set -e
 MODEL_ARCHITECTURE='t5-base'
 MODEL_CHECKPOINT=''
 TEMPLATES='encoder.block.{}.layer.1.DenseReluDense.wi.weight,decoder.block.{}.layer.2.DenseReluDense.wi.weight'
-NUM_EXPERTS=96
 K=20
 
+if [[ $MODEL_ARCHITECTURE == 't5-base' ]]; then
+  NUM_EXPERTS=96
+elif [[ $MODEL_ARCHITECTURE == 't5-large' ]]; then
+  NUM_EXPERTS=128
+else
+  echo "Unknown architecutre $MODEL_ARCHITECTURE!"
+fi
+
+#K=1
+#NUM_EXPERTS=8
+#RESULT_PATH=results/"$MODEL_ARCHITECTURE"-"e$NUM_EXPERTS"-k"$K"/"$DATASET"
+
 DATASET="sst2"
-RESULT_PATH="results/$MODEL_ARCHITECTURE/$DATASET"
-NUM_EVAL_BATCHES=1
+RESULT_PATH=results/"$MODEL_ARCHITECTURE"/"$DATASET"
+NUM_EVAL_BATCHES=4
 
 if [[ ! -d "$RESULT_PATH" ]]; then
-  mkdir "$RESULT_PATH"
+  mkdir -p "$RESULT_PATH"
 fi
 
 if [[ $DATASET == 'sst2' ]]; then
   echo "Setting parameters for sst2..."
-  NUM_MLP_SAMPLES=10240
-  MLP_SAMPLE_SHARD_SIZE=1024
-  EVAL_BATCH_SIZE=512
+  # NUM_MLP_SAMPLES=10240
+  # MLP_SAMPLE_SHARD_SIZE=1024
+  NUM_MLP_SAMPLES=2560
+  MLP_SAMPLE_SHARD_SIZE=512
+  EVAL_BATCH_SIZE=128
 elif [[ $DATASET == 'multi_nli' || $DATASET == 'mnli' ]]; then
   echo "Setting parameters for mnli..."
   NUM_MLP_SAMPLES=10240
@@ -40,7 +53,7 @@ EVAL_ONLY=1
 
 echo "Evaluating Baseline Model..."
 cmd=(python moe_evaluate.py --model_name="$MODEL_ARCHITECTURE"  --checkpoint="$MODEL_CHECKPOINT" \
-  --res_path="$RESULT_PATH" --k="$K" --dataset="$DATASET" --eval_type=base --num_batches="$NUM_EVAL_BATCHES" \
+  --res_path="$RESULT_PATH" --num-expert="$NUM_EXPERTS" --k="$K" --dataset="$DATASET" --eval_type=base --num_batches="$NUM_EVAL_BATCHES" \
   --batch_size="$EVAL_BATCH_SIZE")
 echo "${cmd[*]}"
 ${cmd[@]} | tee -a "$RESULT_PATH/eval_base.log"
@@ -55,7 +68,7 @@ fi
 
 echo "Evaluating MoE Ground Truth..."
 cmd=(python moe_evaluate.py --model_name="$MODEL_ARCHITECTURE"  --checkpoint="$MODEL_CHECKPOINT" \
-  --res_path="$RESULT_PATH" --k="$K" --dataset="$DATASET" --eval_type=moe_gt --num_batches="$NUM_EVAL_BATCHES" \
+  --res_path="$RESULT_PATH" --num-expert="$NUM_EXPERTS" --k="$K" --dataset="$DATASET" --eval_type=moe_gt --num_batches="$NUM_EVAL_BATCHES" \
   --batch_size="$EVAL_BATCH_SIZE")
 echo "${cmd[*]}"
 ${cmd[@]} | tee -a "$RESULT_PATH/eval_moe_gt.log"
@@ -76,7 +89,7 @@ fi
 
 echo "Evaluating MLP..."
 cmd=(python moe_evaluate.py --model_name="$MODEL_ARCHITECTURE"  --checkpoint="$MODEL_CHECKPOINT" \
-  --res_path="$RESULT_PATH" --k="$K" --dataset="$DATASET" --eval_type=moe_mlp --num_batches="$NUM_EVAL_BATCHES" \
+  --res_path="$RESULT_PATH" --num-expert="$NUM_EXPERTS" --k="$K" --dataset="$DATASET" --eval_type=moe_mlp --num_batches="$NUM_EVAL_BATCHES" \
   --batch_size="$EVAL_BATCH_SIZE")
 echo "${cmd[*]}"
 ${cmd[@]} | tee -a "$RESULT_PATH/eval_moe_mlp.log"
